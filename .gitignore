@@ -1,0 +1,26 @@
+# EDA / Simulation artifacts
+*.fsdb
+*.vcd
+*.vpd
+csrc/
+simv*
+novas.*
+ucli.key
+DVEfiles/
+*.daidir/
+*.log
+*~
+*.swp
+*.raw2
+*txn.raw
+out.txt
+outdir/
+.nvprojectname
+tree.make
+vmod/dw_components/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
