@@ -127,8 +127,8 @@ dump_mem 0x80400000 0x20 ...   # 比对 32 字节 Golden 结果
 
 | 信号路径 | 精确 RTL 信号名称 | 观察目的 |
 |:---|:---|:---|
-| `top.nvdla_top.u_partition_c.u_NV_NVDLA_cdma` | **`cdma_dat2mcif_rd_req_valid`**<br>`cdma_dat2mcif_rd_req_ready` | **特征图读请求握手**：CDMA 向外部 DDR (MCIF) 发起特征图读请求 |
-| `top.nvdla_top.u_partition_c.u_NV_NVDLA_cdma` | **`cdma_wt2mcif_rd_req_valid`**<br>`cdma_wt2mcif_rd_req_ready` | **权重读请求握手**：CDMA 向外部 DDR (MCIF) 发起权重读请求 |
+| `top.nvdla_top.u_partition_c.u_NV_NVDLA_cdma` | **`cdma_dat2mcif_rd_req_valid`**<br>`cdma_dat2mcif_rd_req_ready`<br>`cdma_dat2mcif_rd_req_pd[78:0]` | **特征图读请求握手与命令**：CDMA 向外部 DDR (MCIF) 发起特征图读请求（`_pd[63:0]` 为 64 位物理起始地址，`_pd[78:64]` 为 15 位突发长度 `size`，单位为 32 字节原子块） |
+| `top.nvdla_top.u_partition_c.u_NV_NVDLA_cdma` | **`cdma_wt2mcif_rd_req_valid`**<br>`cdma_wt2mcif_rd_req_ready`<br>`cdma_wt2mcif_rd_req_pd[78:0]` | **权重读请求握手与命令**：CDMA 向外部 DDR (MCIF) 发起权重读请求（`_pd[63:0]` 为 64 位物理起始地址，`_pd[78:64]` 为 15 位突发长度 `size`，单位为 32 字节原子块） |
 | `top.nvdla_top.u_partition_c.u_NV_NVDLA_cdma` | **特征图返回**：<br>**`mcif2cdma_dat_rd_rsp_valid`**<br>`mcif2cdma_dat_rd_rsp_ready`<br>`mcif2cdma_dat_rd_rsp_pd[513:0]`<br><br>**权重返回**：<br>**`mcif2cdma_wt_rd_rsp_valid`**<br>`mcif2cdma_wt_rd_rsp_ready`<br>`mcif2cdma_wt_rd_rsp_pd[513:0]` | **DDR 数据返回握手与数据**：外部内存将特征图和权重返回给 CDMA 的 valid/ready 握手与数据信号（`_pd[511:0]` 为 512-bit 数据总线，`_pd[513:512]` 为字节掩码 mask） |
 | `top.nvdla_top.u_partition_c.u_NV_NVDLA_cbuf` | **`cdma2buf_dat_wr_en`**<br>`cdma2buf_dat_wr_addr[11:0]`<br>`cdma2buf_dat_wr_data[1023:0]` | **特征图写 CBUF 缓冲**：CDMA 将读取的特征图按 1024-bit 位宽写入片上 SRAM |
 | `top.nvdla_top.u_partition_c.u_NV_NVDLA_cbuf` | **`cdma2buf_wt_wr_en`**<br>`cdma2buf_wt_wr_addr[11:0]`<br>`cdma2buf_wt_wr_data[511:0]` | **权重写 CBUF 缓冲**：CDMA 将读取的权重按 512-bit 位宽写入片上 SRAM |
