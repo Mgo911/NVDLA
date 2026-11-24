@@ -24,3 +24,8 @@ vmod/dw_components/
 Thumbs.db
 .vscode/
 .idea/
+
+# Temporary Office files
+~$*
+~$$*
+*.tmp
