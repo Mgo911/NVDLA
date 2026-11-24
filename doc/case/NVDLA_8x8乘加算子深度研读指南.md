@@ -141,8 +141,26 @@ dump_mem 0x80400000 0x20 ...   # 比对 32 字节 Golden 结果
 | `top.nvdla_top.u_partition_c.u_NV_NVDLA_cdma` | **`cdma_dat2mcif_rd_req_valid`**<br>`cdma_dat2mcif_rd_req_ready`<br>`cdma_dat2mcif_rd_req_pd[78:0]` | **特征图读请求握手与命令**：CDMA 向外部 DDR (MCIF) 发起特征图读请求（`_pd[63:0]` 为 64 位物理起始地址，`_pd[78:64]` 为 15 位突发长度 `size`，单位为 32 字节原子块） |
 | `top.nvdla_top.u_partition_c.u_NV_NVDLA_cdma` | **`cdma_wt2mcif_rd_req_valid`**<br>`cdma_wt2mcif_rd_req_ready`<br>`cdma_wt2mcif_rd_req_pd[78:0]` | **权重读请求握手与命令**：CDMA 向外部 DDR (MCIF) 发起权重读请求（`_pd[63:0]` 为 64 位物理起始地址，`_pd[78:64]` 为 15 位突发长度 `size`，单位为 32 字节原子块） |
 | `top.nvdla_top.u_partition_c.u_NV_NVDLA_cdma` | **特征图返回**：<br>**`mcif2cdma_dat_rd_rsp_valid`**<br>`mcif2cdma_dat_rd_rsp_ready`<br>`mcif2cdma_dat_rd_rsp_pd[513:0]`<br><br>**权重返回**：<br>**`mcif2cdma_wt_rd_rsp_valid`**<br>`mcif2cdma_wt_rd_rsp_ready`<br>`mcif2cdma_wt_rd_rsp_pd[513:0]` | **DDR 数据返回握手与数据**：外部内存将特征图和权重返回给 CDMA 的 valid/ready 握手与数据信号（`_pd[511:0]` 为 512-bit 数据总线，`_pd[513:512]` 为字节掩码 mask） |
-| `top.nvdla_top.u_partition_c.u_NV_NVDLA_cbuf` | **`cdma2buf_dat_wr_en`**<br>`cdma2buf_dat_wr_addr[11:0]`<br>`cdma2buf_dat_wr_data[1023:0]` | **特征图写 CBUF 缓冲**：CDMA 将读取的特征图按 1024-bit 位宽写入片上 SRAM |
-| `top.nvdla_top.u_partition_c.u_NV_NVDLA_cbuf` | **`cdma2buf_wt_wr_en`**<br>`cdma2buf_wt_wr_addr[11:0]`<br>`cdma2buf_wt_wr_data[511:0]` | **权重写 CBUF 缓冲**：CDMA 将读取的权重按 512-bit 位宽写入片上 SRAM |
+| `top.nvdla_top.u_partition_c.u_NV_NVDLA_cbuf` | **`cdma2buf_dat_wr_en`**<br>`cdma2buf_dat_wr_addr[11:0]`<br>`cdma2buf_dat_wr_hsel[1:0]`<br>`cdma2buf_dat_wr_data[1023:0]` | **特征图写 CBUF 缓冲**：CDMA 将读取的特征图按 1024-bit 位宽写入片上 SRAM（单拍写入 64 个 INT16 数，详见下方 2.1 节微架构精析） |
+| `top.nvdla_top.u_partition_c.u_NV_NVDLA_cbuf` | **`cdma2buf_wt_wr_en`**<br>`cdma2buf_wt_wr_addr[11:0]`<br>`cdma2buf_wt_wr_hsel`<br>`cdma2buf_wt_wr_data[511:0]` | **权重写 CBUF 缓冲**：CDMA 将读取的权重按 512-bit 位宽写入片上 SRAM |
+
+### 2.1 微架构精析：从 DDR 读入到 1024-bit 写入 CBUF 详细流程
+从外部 DDR 的 512-bit 读入，到片上 CBUF 以 1024-bit 超宽总线落盘，经历了 **“DDR 突发接收 $\to$ 片内 SBUF 缓冲 $\to$ CVT 汇聚拼接 $\to$ CBUF 双半体 SRAM 写入”** 四个硬件阶段：
+
+1. **从 DDR 读进来的数据以何种方式进入？**
+   - **单拍载荷（Beat）**：外部 MCIF 接口通过 `mcif2cdma_dat_rd_rsp_*` 信号进行 Valid/Ready 流式握手，每拍返回 **512-bit 数据总线（64 字节）**。
+   - **INT16 数据组织**：单拍 512 位包含 **32 个 INT16 数据**，它**不是单个像素的 32 个通道**，而是**空间上相邻 2 个像素（如像素 0、1）的前 16 个通道（$C=0\sim 15$）**。
+   - **分批突发读取顺序（按 Surface 推进）**：
+     - **第 1 波突发（Surface 0，起始地址 `0x8000_0000`）**：连续突发 8 拍，每拍 2 个像素，顺次将全图 $8\times 8$ 所有像素的 **前 16 个通道（$C=0\sim 15$）** 全部读回片内；
+     - **第 2 波突发（Surface 1，偏移地址 `+0x800` 即 `0x8000_0800`）**：随后发起第二波突发，再顺次将全图所有像素的 **后 16 个通道（$C=16\sim 31$）** 读回片内。
+2. **片内暂存与汇聚（SBUF & CVT 模块）**：
+   - DDR 返回的 512-bit 数据首先打入 CDMA 片内的共享缓冲池 **`u_shared_buffer` (SBUF)**，由 `p0` 和 `p1` 两路 256 位宽端口进行解耦暂存与时钟对齐；
+   - 紧接着，格式转换模块 **`NV_NVDLA_CDMA_cvt`** 对数据进行重对齐与拼接。在无 Mean/Scale 缩放的直通模式下，CVT 将连续接收的 2 拍 512-bit 数据（如像素 0/1 与像素 2/3 的前 16 通道）在片内拼装成一组 **1024-bit 超宽数据总线**（`cdma2buf_dat_wr_data[1023:0]`），一次性汇聚了 **64 个 INT16 数据**。
+3. **片上 CBUF 双半体（Dual-Column）物理 SRAM 写入机制**：
+   - 片上 CBUF 内部每个物理 Bank 在位宽上由两个独立的 512-bit RAM 宏单元组成：**`c0` (低 512 位)** 与 **`c1` (高 512 位)**。
+   - 控制信号通过 **`cdma2buf_dat_wr_hsel[1:0]`（半选择信号）** 驱动：
+     - `hsel = 2'b11` 时，单拍同时拉高 `c0` 与 `c1` 的写使能，以 1024-bit 满位宽一次性将 4 个像素的数据写入片上 SRAM；
+     - 相比之下，权重写入总线（`cdma2buf_wt_wr_data`）仅有 512-bit，每次只能写半个条目；而特征图独享 1024-bit 写入通道，为后级 CSC 向 CMAC-A / CMAC-B 并发广播提供了充沛的带宽保障。
 
 ### 3. CMAC 乘加阵列输入与输出（核心算力观测点）
 > 💡 CMAC 分为 A、B 两个独立单元，分别位于 **`u_partition_ma`** 和 **`u_partition_mb`** 中。
