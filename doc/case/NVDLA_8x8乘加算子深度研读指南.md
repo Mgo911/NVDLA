@@ -32,8 +32,8 @@
 ### 2. 核心计算量
 - **总乘加次数（MACs）**：
   $$\text{Total MACs} = H_{out} \times W_{out} \times C_{out} \times (K_h \times K_w \times C_{in}) = 1 \times 1 \times 16 \times (8 \times 8 \times 32) = 32,768\text{ 次乘加}$$
-- NVDLA 的 CMAC 阵列在 INT16 模式下一拍可并发执行 **256 次乘法**。因此在理想无气泡流水线下，纯计算仅需：
-  $$T_{compute} = \frac{32,768}{256} = 128\text{ 个计算时钟周期}$$
+- NVDLA（Full Config）的 CMAC-A/B 共 16 个 MAC 单元，在 INT16 模式下物理峰值每拍可并发执行 **1024 次乘法**（16 核 × 64 输入通道）。本算子输入通道为 32（占用一半通道），因此每拍并发执行 **512 次有效乘法**，理想无气泡流水线下纯计算仅需：
+  $$T_{compute} = \frac{32,768}{512} = 64\text{ 个计算时钟周期}$$
 
 ### 3. DDR 内存布局与访存微架构精析
 - **数据格式**：`input_feature_map.dat` 与 `input_weight.dat` 均为 **有符号数（Signed INT16，二进制补码）**；CMAC 乘法器内部采用 **Booth Radix-4 有符号乘法算法**。
@@ -156,7 +156,7 @@ dump_mem 0x80400000 0x20 ...   # 比对 32 字节 Golden 结果
        - **前半波突发（4 拍，Surface 0）**：从当前行 Surface 0 基地址连续突发 4 拍（每拍 2 个像素），读回本行 8 个像素的 **前 16 个通道（$C=0\sim 15$）**；
        - **后半波突发（4 拍，Surface 1）**：跳跃 `+SURF_STRIDE`（`+0x800`），再连续突发 4 拍，读回本行 8 个像素的 **后 16 个通道（$C=16\sim 31$）**；
      - 至此，本行 8 个像素的完整 32 通道已在片内到齐，并写入片上 CBUF；
-     - 随后行地址跳跃 `+LINE_STRIDE`（`+0x100`），依次交替推进下一行，全图 8 行总共执行 **$8\times 8 = 64$ 拍**（$64\times 64\text{B} = 4096\text{ 字节}$），完成整张特征图的无气泡流水搬移。
+     - 随后行地址跳跃 `+LINE_STRIDE`（`+0x100`），依次推进下一行；2 个 Surface × 8 行 × 每行 4 拍，全图总共执行 **$16\times 4 = 64$ 拍**（$64\times 64\text{B} = 4096\text{ 字节}$），完成整张特征图的无气泡流水搬移。
 2. **片内暂存与汇聚（SBUF & CVT 模块）**：
    - DDR 返回的 512-bit 数据首先打入 CDMA 片内的共享缓冲池 **`u_shared_buffer` (SBUF)**，由 `p0` 和 `p1` 两路 256 位宽端口进行解耦暂存与时钟对齐；
    - 紧接着，格式转换模块 **`NV_NVDLA_CDMA_cvt`** 对数据进行重对齐与拼接。在无 Mean/Scale 缩放的直通模式下，最终在片上 CBUF 中汇聚成 **1024-bit 超宽物理条目**（`cdma2buf_dat_wr_data[1023:0]`），一次性汇聚了 **64 个 INT16 数据**。
@@ -228,7 +228,7 @@ dump_mem 0x80400000 0x20 ...   # 比对 32 字节 Golden 结果
      ```
 
 4. **CBUF Bank 分配与向 CSC 汇报握手（Credit 计数）**：
-   - **Bank 分配**：寄存器配置 `D_BANK_0 = 0x20001`，为特征图分配 Bank 0，为权重分配 **Bank 1 和 Bank 2（共 2 个 Bank）**。每个 Bank 包含 512 个 entry（64KB 容量），2 个 Bank 共 1024 个 entry（128KB 空间），完全容纳本算子的 64KB 权重（占用 512 个 entry）；
+   - **Bank 分配**：寄存器配置 `D_BANK_0 = 0x20001`，为特征图分配 Bank 0，为权重分配 **Bank 1 和 Bank 2（共 2 个 Bank）**。每个 Bank 包含 **256 个 entry（32KB 容量）**（`CBUF_ENTRY_PER_BANK = 256`），2 个 Bank 共 **512 个 entry（64KB 空间）**，恰好 100% 装满本算子的 64KB 权重（占用全部 512 个 entry）；
    - **CSC 就绪通知**：权重写入片上 CBUF 的同时，CDMA 权重引擎通过 **`cdma2sc_wt_updt`** 脉冲，并携带 **`cdma2sc_wt_entries[11:0]`** 和 **`cdma2sc_wt_kernels[13:0]`** 状态总线向后级 CSC 调度器同步进度。CSC 据此确认权重已经在片内就绪，随后启动向 CMAC 阵列的分发发射。
 
 ### 3. CMAC 乘加阵列输入与输出（核心算力观测点）
@@ -248,7 +248,7 @@ dump_mem 0x80400000 0x20 ...   # 比对 32 字节 Golden 结果
 | `top.nvdla_top.u_partition_a.u_NV_NVDLA_cacc` | **`mac_a2accu_pvld`**<br>**`mac_b2accu_pvld`** | 接收来自 CMAC-A 和 CMAC-B 乘法阵列的输入有效信号 |
 | `top.nvdla_top.u_partition_a.u_NV_NVDLA_cacc` | **`mac_a2accu_data0 ~ 7`**<br>**`mac_b2accu_data0 ~ 7`** | CACC 接收到的待累加原始乘积数据 |
 | `top.nvdla_top.u_partition_a.u_NV_NVDLA_cacc` | **`accu_ctrl_valid`** | 加法树运算使能有效信号 |
-| `top.nvdla_top.u_partition_a.u_NV_NVDLA_cacc` | `abuf_wr_en[7:0]`<br>`abuf_wr_data0 ~ 7` | **部分和累加锁存**：加法树规约求和后的中间结果写入 Assembly Buffer |
+| `top.nvdla_top.u_partition_a.u_NV_NVDLA_cacc` | `abuf_wr_en[7:0]`<br>`abuf_wr_data_0 ~ 7` | **部分和累加锁存**：加法树规约求和后的中间结果写入 Assembly Buffer |
 
 ---
 
